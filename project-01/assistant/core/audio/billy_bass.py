@@ -1,19 +1,53 @@
+# -*- coding: utf-8 -*-
 """
-Billy Bass motor controller for mouth, tail, and head animations.
+--------------------------------------------------------------------------
+Billy Bass Motor Controller
+--------------------------------------------------------------------------
+License:   MIT License
 
-Controls motor drivers (via PWM and GPIO) to animate:
-- Mouth: Synchronized with audio playback amplitude
-- Tail: Flaps during thinking state
-- Head: Turns during listening and speaking states
+Copyright 2025 - Jackson Lieb
 
-Requires Adafruit_BBIO library (BeagleBone Black specific).
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+--------------------------------------------------------------------------
+
+Billy Bass motor controller for mouth, tail, and head animations. Controls
+motor drivers (via PWM and GPIO) to animate the fish mouth synchronized with
+audio playback amplitude, tail flaps during thinking/listening states, and
+head turns during speaking. Requires Adafruit_BBIO library (BeagleBone Black
+specific).
+
+--------------------------------------------------------------------------
 """
 
 import asyncio
 import logging
 import os
-import numpy as np
-import soundfile as sf
+
+try:
+    import soundfile as sf
+except ImportError:
+    sf = None
+
+try:
+    import numpy as np
+except ImportError:
+    np = None
 from typing import Optional
 from ..contracts import PlaybackStart, PlaybackEnd, UXState
 
@@ -55,9 +89,11 @@ class BillyBass:
     STBY_PIN = "P1_06"
 
     # Audio processing parameters
-    CHUNK_SIZE_MS = 20  # Process audio in 20ms chunks
-    NOISE_GATE_THRESHOLD = 200  # RMS threshold below which motor stops
-    VOLUME_DIVISOR = 500  # Scale factor for volume to PWM conversion
+    CHUNK_SIZE_MS = 10  # Process audio in 10ms chunks (smaller = more responsive)
+    NOISE_GATE_THRESHOLD = 500  # RMS threshold below which motor stops (higher = more precise)
+    VOLUME_DIVISOR = 150  # Scale factor for volume to PWM conversion (lower = more movement)
+    MIN_PWM = 5  # Minimum PWM when audio detected (for subtle movement)
+    MAX_PWM = 80  # Maximum PWM (prevent over-driving motor)
 
     def __init__(self, bus, enabled: bool = True):
         """
@@ -74,6 +110,7 @@ class BillyBass:
         self._initialized = False
         self._current_task: Optional[asyncio.Task] = None
         self._body_task: Optional[asyncio.Task] = None
+        self._periodic_flap_task: Optional[asyncio.Task] = None
 
         if not BBIO_AVAILABLE:
             self.log.warning(
@@ -86,12 +123,23 @@ class BillyBass:
     async def start(self):
         """Subscribe to playback and UX state events."""
         if not self.enabled:
+            self.log.warning("BillyBass: start() called but disabled")
             return
         
+        self.log.info("BillyBass: Starting, initializing hardware...")
         self._initialize_hardware()
+        
+        if not self._initialized:
+            self.log.error("BillyBass: Hardware initialization failed, motors will not work")
+            return
+        
         self.bus.subscribe("audio.playback.start", self._on_playback_start)
         self.bus.subscribe("audio.playback.end", self._on_playback_end)
         self.bus.subscribe("ux.state", self._on_ux_state)
+        self.log.info("BillyBass: Subscribed to events, ready to control motors")
+        
+        # Start periodic tail flapping when idle
+        self._periodic_flap_task = asyncio.create_task(self._periodic_idle_flap())
 
     def _initialize_hardware(self):
         """Initialize GPIO and PWM pins."""
@@ -122,17 +170,28 @@ class BillyBass:
     async def _on_playback_start(self, payload: dict):
         """Handle playback start event - begin processing audio chunks."""
         if not self.enabled:
+            self.log.warning("BillyBass: Received playback.start but disabled")
+            return
+        
+        if not self._initialized:
+            self.log.warning("BillyBass: Received playback.start but hardware not initialized")
             return
         
         try:
             event = PlaybackStart(**payload)
+            self.log.info("BillyBass: Received playback.start for %s", event.wav_path)
         except Exception:
             self.log.warning("malformed audio.playback.start event, skipping")
             return
 
         wav_path = event.wav_path
         if not wav_path or not os.path.exists(wav_path):
+            self.log.warning("BillyBass: Audio file not found: %s", wav_path)
             return
+
+        # Publish UX state "speaking" so body animations trigger
+        # This ensures animations work even if conversation loop isn't running (e.g., REPL mode)
+        await self.bus.publish("ux.state", UXState(state="speaking").dict())
 
         # Cancel any existing task
         if self._current_task and not self._current_task.done():
@@ -143,6 +202,7 @@ class BillyBass:
                 pass
 
         # Start processing audio chunks
+        self.log.info("BillyBass: Starting audio chunk processing for mouth motor")
         self._current_task = asyncio.create_task(
             self._process_audio_chunks(wav_path)
         )
@@ -157,6 +217,10 @@ class BillyBass:
         except Exception:
             self.log.warning("malformed audio.playback.end event, skipping")
             return
+
+        # Publish UX state "idle" to stop body animations
+        if event.ok:
+            await self.bus.publish("ux.state", UXState(state="idle").dict())
 
         # Stop motor
         self._stop_motor()
@@ -174,8 +238,12 @@ class BillyBass:
         Read audio file in chunks and control motor based on amplitude.
         
         This runs in parallel with the actual audio playback.
+        Uses precise timing to stay synchronized with audio playback.
         """
         try:
+            # Small delay to let audio playback start (account for device initialization)
+            await asyncio.sleep(0.05)  # 50ms delay to sync with audio playback start
+            
             # Open audio file
             with sf.SoundFile(wav_path) as audio_file:
                 sample_rate = audio_file.samplerate
@@ -184,9 +252,14 @@ class BillyBass:
                 chunk_duration_s = self.CHUNK_SIZE_MS / 1000.0
 
                 self.log.debug(
-                    "Processing audio chunks: %d Hz, %d ch, %d samples/chunk",
-                    sample_rate, channels, chunk_size_samples
+                    "Processing audio chunks: %d Hz, %d ch, %d samples/chunk, %.1fms/chunk",
+                    sample_rate, channels, chunk_size_samples, self.CHUNK_SIZE_MS
                 )
+
+                # Track timing to maintain sync
+                import time
+                start_time = time.time()
+                chunk_index = 0
 
                 # Read and process chunks
                 while True:
@@ -204,11 +277,23 @@ class BillyBass:
                     # Convert float32 [-1, 1] to int16 for RMS calculation
                     chunk_int16 = (chunk * 32767).astype(np.int16)
 
-                    # Control motor based on volume
-                    await asyncio.to_thread(self._move_mouth, chunk_int16)
+                    # Control motor based on volume (Python 3.7 compatible)
+                    loop = asyncio.get_event_loop()
+                    await loop.run_in_executor(None, self._move_mouth, chunk_int16)
 
-                    # Sleep for chunk duration to maintain real-time processing
-                    await asyncio.sleep(chunk_duration_s)
+                    # Calculate precise sleep time to maintain sync
+                    chunk_index += 1
+                    expected_time = start_time + (chunk_index * chunk_duration_s)
+                    current_time = time.time()
+                    sleep_time = max(0, expected_time - current_time)
+                    
+                    # If we're behind, don't sleep (catch up)
+                    # If we're ahead, sleep to maintain sync
+                    if sleep_time > 0:
+                        await asyncio.sleep(sleep_time)
+                    else:
+                        # We're behind, skip a tiny sleep to catch up
+                        await asyncio.sleep(0.001)  # Minimal sleep to yield to event loop
 
         except asyncio.CancelledError:
             self.log.debug("Audio chunk processing cancelled")
@@ -218,44 +303,95 @@ class BillyBass:
         finally:
             self._stop_motor()
 
-    def _move_mouth(self, audio_chunk: np.ndarray):
+    def _move_mouth(self, audio_chunk):
         """
         Calculate volume from audio chunk and set PWM duty cycle.
         
         This runs in a thread to avoid blocking the event loop.
+        Uses peak detection for more precise mouth movement.
+        Actively closes mouth by reversing motor direction when no audio.
         """
         if not self._initialized:
             return
 
         try:
-            # Calculate RMS volume
             if len(audio_chunk) == 0:
                 volume = 0
+                peak = 0
             else:
+                # Calculate RMS volume (average energy)
                 volume = np.sqrt(np.mean(audio_chunk.astype(np.float64) ** 2))
+                # Calculate peak amplitude (for detecting speech bursts)
+                peak = np.max(np.abs(audio_chunk.astype(np.float64)))
+
+            # Use peak detection for more precise movement
+            # Peak is better for detecting actual speech sounds vs background
+            effective_volume = max(volume, peak * 0.7)  # Blend RMS and peak
+
+            # Track previous state to detect transitions
+            if not hasattr(self, '_prev_pwm'):
+                self._prev_pwm = 0
 
             # Noise gate: stop motor if volume too low
-            if volume < self.NOISE_GATE_THRESHOLD:
+            if effective_volume < self.NOISE_GATE_THRESHOLD:
                 pwm_val = 0
             else:
-                # Scale volume to 0-100 PWM duty cycle
-                pwm_val = min(100, int(volume / self.VOLUME_DIVISOR))
+                # Scale volume to PWM duty cycle with min/max limits
+                # Use a more aggressive scaling for better responsiveness
+                pwm_val = int((effective_volume - self.NOISE_GATE_THRESHOLD) / self.VOLUME_DIVISOR)
+                pwm_val = max(self.MIN_PWM, min(self.MAX_PWM, pwm_val))
 
-            # Drive motor (one direction opens mouth)
-            GPIO.output(self.MOUTH_IN1, GPIO.HIGH)
-            GPIO.output(self.MOUTH_IN2, GPIO.LOW)
-            PWM.set_duty_cycle(self.MOUTH_PWM_PIN, pwm_val)
+            # Log periodically to debug
+            if not hasattr(self, '_mouth_log_counter'):
+                self._mouth_log_counter = 0
+            self._mouth_log_counter += 1
+            if self._mouth_log_counter % 50 == 0:  # Log every 50 chunks (~1 second)
+                self.log.info("BillyBass: volume=%.1f, peak=%.1f, pwm=%d", volume, peak, pwm_val)
+
+            # Drive motor based on audio
+            if pwm_val > 0:
+                # Open mouth: drive motor forward
+                GPIO.output(self.MOUTH_IN1, GPIO.HIGH)
+                GPIO.output(self.MOUTH_IN2, GPIO.LOW)
+                PWM.set_duty_cycle(self.MOUTH_PWM_PIN, pwm_val)
+            else:
+                # Close mouth: stop immediately
+                # If transitioning from open to closed, briefly reverse to actively close
+                if self._prev_pwm > 0:
+                    # Transition: was open, now closing - briefly reverse to actively close
+                    GPIO.output(self.MOUTH_IN1, GPIO.LOW)
+                    GPIO.output(self.MOUTH_IN2, GPIO.HIGH)
+                    PWM.set_duty_cycle(self.MOUTH_PWM_PIN, 25)  # Brief reverse pulse to close
+                    # The next chunk (20ms later) will stop it, so this is just a quick pulse
+                else:
+                    # Already closed, ensure it stays stopped
+                    PWM.set_duty_cycle(self.MOUTH_PWM_PIN, 0)
+                    # Set both direction pins low to ensure no drift
+                    GPIO.output(self.MOUTH_IN1, GPIO.LOW)
+                    GPIO.output(self.MOUTH_IN2, GPIO.LOW)
+
+            self._prev_pwm = pwm_val
 
         except Exception as e:
             self.log.exception("Error controlling motor: %s", e)
 
     def _stop_motor(self):
-        """Stop the mouth motor by setting PWM to 0."""
+        """Stop the mouth motor by actively closing it, then setting PWM to 0."""
         if not self._initialized:
             return
         
         try:
+            # Actively close mouth by briefly reversing motor direction
+            GPIO.output(self.MOUTH_IN1, GPIO.LOW)
+            GPIO.output(self.MOUTH_IN2, GPIO.HIGH)
+            PWM.set_duty_cycle(self.MOUTH_PWM_PIN, 30)  # Brief reverse pulse to close
+            # Small delay to let it close (this is in a thread, so OK)
+            import time
+            time.sleep(0.05)  # 50ms reverse pulse
+            # Now stop
             PWM.set_duty_cycle(self.MOUTH_PWM_PIN, 0)
+            GPIO.output(self.MOUTH_IN1, GPIO.LOW)
+            GPIO.output(self.MOUTH_IN2, GPIO.LOW)
         except Exception as e:
             self.log.exception("Error stopping mouth motor: %s", e)
 
@@ -318,6 +454,77 @@ class BillyBass:
         except Exception as e:
             self.log.exception("Error stopping body motor: %s", e)
 
+    async def _listening_animation(self):
+        """
+        Occasional tail flaps while listening/waiting for speech.
+        Creates a more natural, alive appearance.
+        """
+        if not self.enabled or not self._initialized:
+            return
+        
+        try:
+            import random
+            while True:  # Run until cancelled
+                # Wait a random time between flaps (2-5 seconds)
+                wait_time = random.uniform(2.0, 5.0)
+                await asyncio.sleep(wait_time)
+                
+                # Quick tail flap
+                GPIO.output(self.BODY_IN1, GPIO.HIGH)
+                GPIO.output(self.BODY_IN2, GPIO.LOW)
+                PWM.set_duty_cycle(self.BODY_PWM_PIN, 70)
+                await asyncio.sleep(0.2)  # Quick flap
+                
+                # Stop
+                PWM.set_duty_cycle(self.BODY_PWM_PIN, 0)
+        except asyncio.CancelledError:
+            self.stop_body_motor()
+            raise
+        except Exception as e:
+            self.log.exception("Error during listening animation: %s", e)
+            self.stop_body_motor()
+
+    async def _periodic_idle_flap(self):
+        """
+        Periodic tail flaps when idle (after client boots).
+        Flaps every few seconds to keep the fish looking alive.
+        Only flaps when no other body animation is active.
+        """
+        if not self.enabled or not self._initialized:
+            return
+        
+        try:
+            import random
+            # Initial delay before first flap (let system settle)
+            await asyncio.sleep(3.0)
+            
+            while True:  # Run until cancelled
+                # Only flap if no active body task (not speaking, thinking, or listening)
+                if self._body_task is None or self._body_task.done():
+                    # Wait a random time between flaps (3-7 seconds)
+                    wait_time = random.uniform(3.0, 7.0)
+                    await asyncio.sleep(wait_time)
+                    
+                    # Double-check we're still idle before flapping
+                    if self._body_task is None or self._body_task.done():
+                        # Gentle tail flap
+                        GPIO.output(self.BODY_IN1, GPIO.HIGH)
+                        GPIO.output(self.BODY_IN2, GPIO.LOW)
+                        PWM.set_duty_cycle(self.BODY_PWM_PIN, 60)
+                        await asyncio.sleep(0.3)  # Gentle flap duration
+                        
+                        # Stop
+                        PWM.set_duty_cycle(self.BODY_PWM_PIN, 0)
+                else:
+                    # Wait a bit before checking again if body task is active
+                    await asyncio.sleep(1.0)
+        except asyncio.CancelledError:
+            self.stop_body_motor()
+            raise
+        except Exception as e:
+            self.log.exception("Error during periodic idle flap: %s", e)
+            self.stop_body_motor()
+
     async def _on_ux_state(self, payload: dict):
         """Handle UX state changes to trigger body animations."""
         if not self.enabled:
@@ -342,21 +549,21 @@ class BillyBass:
             self.stop_body_motor()
         
         if state == "thinking":
-            # Tail flap during thinking state
-            self.log.debug("Thinking state: triggering tail flap")
-            self._body_task = asyncio.create_task(self.tail_flap(duration_s=0.5, speed=100))
+            # Occasional tail flaps while thinking
+            self.log.debug("Thinking state: starting occasional tail flaps")
+            self._body_task = asyncio.create_task(self._listening_animation())
         elif state == "listening":
-            # Start head turn while listening (continuous)
-            self.log.debug("Listening state: starting head turn")
-            self._body_task = asyncio.create_task(self.head_turn(duration_s=float('inf'), speed=100))
+            # Occasional tail flaps while listening
+            self.log.debug("Listening state: starting occasional tail flaps")
+            self._body_task = asyncio.create_task(self._listening_animation())
         elif state == "speaking":
-            # Continue head turn while speaking (continuous)
-            self.log.debug("Speaking state: continuing head turn")
-            self._body_task = asyncio.create_task(self.head_turn(duration_s=float('inf'), speed=100))
+            # Just turn head and look while speaking (continuous, gentle)
+            self.log.debug("Speaking state: turning head to look")
+            self._body_task = asyncio.create_task(self.head_turn(duration_s=float('inf'), speed=60))
         elif state == "idle":
-            # Stop body motor when idle
-            self.log.debug("Idle state: stopping body motor")
-            self.stop_body_motor()
+            # Flap tail when done speaking, then stop (slower, more gentle)
+            self.log.debug("Idle state: flapping tail, then stopping")
+            self._body_task = asyncio.create_task(self.tail_flap(duration_s=0.7, speed=60))
 
     async def stop(self):
         """Cleanup resources before shutdown."""
@@ -378,6 +585,13 @@ class BillyBass:
             self._body_task.cancel()
             try:
                 await self._body_task
+            except asyncio.CancelledError:
+                pass
+        
+        if self._periodic_flap_task and not self._periodic_flap_task.done():
+            self._periodic_flap_task.cancel()
+            try:
+                await self._periodic_flap_task
             except asyncio.CancelledError:
                 pass
 

@@ -1,14 +1,48 @@
+# -*- coding: utf-8 -*-
 """
-Simple HTTP server for Fish Assistant client mode.
+--------------------------------------------------------------------------
+Fish Assistant Client HTTP Server
+--------------------------------------------------------------------------
+License:   MIT License
 
-Allows server to push audio files to client for playback.
+Copyright 2025 - Jackson Lieb
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+--------------------------------------------------------------------------
+
+Simple HTTP server for Fish Assistant client mode. Allows server to push
+audio files to client for playback. Receives audio files via POST request
+and triggers local playback through the event bus.
+
+--------------------------------------------------------------------------
 """
 
 import logging
 import tempfile
 import os
-import soundfile as sf
+import wave
 from typing import Optional
+
+try:
+    import soundfile as sf
+except ImportError:
+    sf = None
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from assistant.core.bus import Bus
@@ -17,21 +51,27 @@ from assistant.core.contracts import TTSAudio
 logger = logging.getLogger("client_server")
 
 
-def create_client_app(bus: Bus) -> FastAPI:
+def create_client_app(bus: Bus, lifespan=None) -> FastAPI:
     """
     Create FastAPI app for client mode.
     
     Args:
         bus: Event bus instance to publish audio events to
+        lifespan: Optional lifespan context manager
     
     Returns:
         FastAPI app instance
     """
-    app = FastAPI(
-        title="Fish Assistant Client API",
-        description="Client endpoint for receiving audio files",
-        version="0.1.0"
-    )
+    app_kwargs = {
+        "title": "Fish Assistant Client API",
+        "description": "Client endpoint for receiving audio files",
+        "version": "0.1.0"
+    }
+    
+    if lifespan:
+        app_kwargs["lifespan"] = lifespan
+    
+    app = FastAPI(**app_kwargs)
     
     # Add CORS middleware
     app.add_middleware(
@@ -59,8 +99,11 @@ def create_client_app(bus: Bus) -> FastAPI:
         
         Returns success status.
         """
+        logger.info("Client: Received audio play request: %s", audio.filename)
+        
         # Validate file type
         if not audio.filename.endswith(('.wav', '.WAV')):
+            logger.warning("Client: Invalid file type: %s", audio.filename)
             raise HTTPException(
                 status_code=400,
                 detail="Only WAV files are supported"
@@ -77,23 +120,28 @@ def create_client_app(bus: Bus) -> FastAPI:
                 f.write(content)
             
             logger.info(
-                "Received audio file: %s (%d bytes)",
-                audio.filename, len(content)
+                "Client: Saved audio file: %s (%d bytes) -> %s",
+                audio.filename, len(content), temp_path
             )
             
             # Get duration from audio file
+            duration_s = 0.01
             try:
-                info = sf.info(temp_path)
-                duration_s = info.frames / float(info.samplerate) if info.samplerate else 0.01
+                if sf:
+                    info = sf.info(temp_path)
+                    duration_s = info.frames / float(info.samplerate) if info.samplerate else 0.01
+                else:
+                    with wave.open(temp_path, 'rb') as wf:
+                        duration_s = wf.getnframes() / float(wf.getframerate())
             except Exception as e:
                 logger.warning("Could not read audio duration: %s", e)
-                duration_s = 0.01  # minimal default to satisfy contract
             
             # Publish TTSAudio event to trigger playback
+            logger.info("Client: Publishing tts.audio event to bus (duration=%.2fs, path=%s)", duration_s, temp_path)
             audio_event = TTSAudio(wav_path=temp_path, duration_s=duration_s)
+            logger.info("Client: Created TTSAudio event: topic=%s, wav_path=%s", audio_event.topic, audio_event.wav_path)
             await bus.publish(audio_event.topic, audio_event.dict())
-            
-            logger.info("Published audio event for playback: %s (%.2fs)", temp_path, duration_s)
+            logger.info("Client: Published tts.audio event successfully (bus.publish completed)")
             
             return {
                 "status": "ok",

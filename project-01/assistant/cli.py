@@ -1,22 +1,57 @@
+# -*- coding: utf-8 -*-
+"""
+--------------------------------------------------------------------------
+Fish Assistant CLI
+--------------------------------------------------------------------------
+License:   MIT License
+
+Copyright 2025 - Jackson Lieb
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+--------------------------------------------------------------------------
+
+Command-line interface for Fish Assistant. Provides commands for audio
+testing, transcription, pipeline testing, interactive mode, conversation
+loop, server mode, and client mode.
+
+--------------------------------------------------------------------------
+"""
+
 import typer
 import asyncio
 from pathlib import Path
-from assistant.core.audio.devices import list_input_devices, get_default_input_index
-from assistant.core.audio.recorder import record_wav, playback_wav
-from assistant.core.stt.whisper_adapter import transcribe_file
-from assistant.app import main as app_main
+from typing import Optional
 
 app = typer.Typer(help="Fish Assistant CLI")
 
 @app.command("audio:list")
 def audio_list():
     """List input audio devices."""
+    from assistant.core.audio.devices import list_input_devices
     for idx, name in list_input_devices():
         typer.echo(f"{idx:>2}  {name}")
 
 @app.command("audio:test")
-def audio_test(duration: float = typer.Option(5.0, "--duration", "-d"), device: int | None = None):
+def audio_test(duration: float = typer.Option(5.0, "--duration", "-d"), device: Optional[int] = None):
     """Record for DURATION seconds and play back."""
+    from assistant.core.audio.devices import get_default_input_index
+    from assistant.core.audio.recorder import record_wav, playback_wav
     if device is None:
         device = get_default_input_index()
     res = record_wav(duration_s=duration, device_index=device)
@@ -27,17 +62,21 @@ def audio_test(duration: float = typer.Option(5.0, "--duration", "-d"), device: 
 @app.command("stt:transcribe")
 def stt_transcribe(path: Path, model_size: str = "tiny"):
     """Transcribe a WAV/MP3 file and print text."""
+    from assistant.core.stt.whisper_adapter import transcribe_file
     text = transcribe_file(path, model_size=model_size)
     typer.echo(text)
 
 @app.command("demo:record-and-transcribe")
 def demo_record_and_transcribe(
     duration: float = typer.Option(5.0, "--duration", "-d"),
-    device: int | None = None,
+    device: Optional[int] = None,
     model_size: str = "tiny",
     playback: bool = True,
 ):
     """Record, (optionally) play back, then transcribe and print."""
+    from assistant.core.audio.devices import get_default_input_index
+    from assistant.core.audio.recorder import record_wav, playback_wav
+    from assistant.core.stt.whisper_adapter import transcribe_file
     if device is None:
         device = get_default_input_index()
     res = record_wav(duration_s=duration, device_index=device)
@@ -50,15 +89,19 @@ def demo_record_and_transcribe(
 @app.command("test:pipeline")
 def test_pipeline(
     duration: float = typer.Option(5.0, "--duration", "-d"),
-    device: int | None = None,
+    device: Optional[int] = None,
     model_size: str = "tiny",
 ):
     """Test full pipeline: record audio → STT → NLU → Skills → TTS → Playback."""
+    from assistant.core.audio.devices import get_default_input_index
+    from assistant.core.audio.recorder import record_wav
+    
     async def _test():
         from assistant.core.bus import Bus
         from assistant.core.contracts import AudioRecorded
         from assistant.app import start_components
         
+        nonlocal device
         bus = Bus()
         await start_components(bus)
         
@@ -81,18 +124,22 @@ def test_pipeline(
 @app.command("run")
 def run_assistant():
     """Run the Fish Assistant in interactive mode."""
+    from assistant.app import main as app_main
     asyncio.run(app_main())
 
 @app.command("converse")
 def converse(
-    device: int | None = None,
+    device: Optional[int] = None,
 ):
     """Start continuous conversation loop with VAD (hands-free mode)."""
+    from assistant.core.audio.devices import get_default_input_index
+    
     async def _converse():
         from assistant.core.bus import Bus
         from assistant.core.ux.conversation_loop import ConversationLoop
         from assistant.app import start_components
         
+        nonlocal device
         bus = Bus()
         
         # Start all components (STT, NLU, TTS, Playback, Skills)
@@ -122,17 +169,25 @@ def converse(
 def server(
     host: str = typer.Option(None, "--host", "-H", help="Host to bind to"),
     port: int = typer.Option(None, "--port", "-p", help="Port to bind to"),
-    device: int | None = typer.Option(None, "--device", "-d", help="Audio input device index"),
+    device: Optional[int] = typer.Option(None, "--device", "-d", help="Audio input device index"),
     client_url: str = typer.Option(None, "--client-url", "-c", help="Client server URL to push audio to"),
 ):
     """Start Fish Assistant in server mode (microphone + HTTP API)."""
+    import logging
     import uvicorn
     from contextlib import asynccontextmanager
+    from assistant.core.audio.devices import get_default_input_index
     from assistant.core.config import Config
     from assistant.core.bus import Bus
     from assistant.core.ux.conversation_loop import ConversationLoop
     from assistant.app import start_server_components
     from assistant.server import create_app
+    
+    # Configure logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format="[%(levelname)s] %(name)s: %(message)s"
+    )
     
     # Set deployment mode
     Config.DEPLOYMENT_MODE = "server"
@@ -211,11 +266,18 @@ def client(
     port: int = typer.Option(8001, "--port", "-p", help="Port to bind client server to"),
 ):
     """Start Fish Assistant in client mode (playback + motors, remote STT/TTS)."""
+    import logging
     import uvicorn
     from assistant.core.config import Config
     from assistant.core.bus import Bus
     from assistant.app import start_client_components
     from assistant.client_server import create_client_app
+    
+    # Configure logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format="[%(levelname)s] %(name)s: %(message)s"
+    )
     
     # Set deployment mode
     Config.DEPLOYMENT_MODE = "client"
@@ -226,9 +288,13 @@ def client(
         typer.echo(f"   Current: STT_MODE={Config.STT_MODE}, TTS_MODE={Config.TTS_MODE}")
         typer.echo(f"   Using server URLs: STT={Config.STT_SERVER_URL}, TTS={Config.TTS_SERVER_URL}")
     
-    async def _start_client():
-        bus = Bus()
-        
+    from contextlib import asynccontextmanager
+    
+    bus = Bus()
+    
+    @asynccontextmanager
+    async def lifespan(app_instance):
+        # Startup
         typer.echo("🐟 Starting Fish Assistant in client mode...")
         typer.echo(f"📡 Connecting to server:")
         typer.echo(f"   STT: {Config.STT_SERVER_URL}")
@@ -244,18 +310,23 @@ def client(
         typer.echo("✅ Client ready. Waiting for audio playback events...")
         typer.echo("Press Ctrl+C to stop\n")
         
-        # Create client HTTP app
-        client_app = create_client_app(bus)
+        yield
         
-        # Start uvicorn server (blocking)
-        uvicorn.run(
-            client_app,
-            host=host,
-            port=port,
-            log_level="info"
-        )
+        # Shutdown
+        typer.echo("\n🛑 Stopping client...")
+        bus.clear()
+        typer.echo("✅ Stopped.")
     
-    asyncio.run(_start_client())
+    # Create client HTTP app with lifespan
+    client_app = create_client_app(bus, lifespan=lifespan)
+    
+    # Start uvicorn server (blocking, creates its own event loop)
+    uvicorn.run(
+        client_app,
+        host=host,
+        port=port,
+        log_level="info"
+    )
 
 if __name__ == "__main__":
     app()

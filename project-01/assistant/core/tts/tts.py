@@ -1,16 +1,50 @@
+# -*- coding: utf-8 -*-
+"""
+--------------------------------------------------------------------------
+Text-to-Speech
+--------------------------------------------------------------------------
+License:   MIT License
+
+Copyright 2025 - Jackson Lieb
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+--------------------------------------------------------------------------
+
+Text-to-speech component for Fish Assistant. Listens for TTS requests and
+synthesizes text to speech using either local (Pyttsx3Adapter) or remote
+(RemoteTTSAdapter) adapters. Publishes audio events for playback.
+
+--------------------------------------------------------------------------
+"""
+
 import asyncio
 import logging
 import soundfile as sf
-from typing import Protocol
-from assistant.core.tts.pyttsx3_adapter import Pyttsx3Adapter
+from typing import Optional
 from assistant.core.contracts import TTSRequest, TTSAudio, same_trace
 
 
-class TTSAdapter(Protocol):
+class TTSAdapter:
     """Protocol for TTS adapters - must implement synth method."""
     def synth(self, text: str) -> str:
         """Synthesize text to speech and return path to WAV file."""
-        ...
+        raise NotImplementedError
 
 
 class TTS:
@@ -20,7 +54,7 @@ class TTS:
     Can use either local (Pyttsx3Adapter) or remote (RemoteTTSAdapter) adapters.
     """
 
-    def __init__(self, bus, adapter: TTSAdapter | None = None):
+    def __init__(self, bus, adapter: Optional[TTSAdapter] = None):
         """
         Initialize TTS component.
         
@@ -30,28 +64,35 @@ class TTS:
                     If None, creates a local Pyttsx3Adapter.
         """
         self.bus = bus
-        self.adapter = adapter or Pyttsx3Adapter()
+        if adapter is None:
+            # Only import pyttsx3 when actually needed (not in client mode)
+            from assistant.core.tts.pyttsx3_adapter import Pyttsx3Adapter
+            adapter = Pyttsx3Adapter()
+        self.adapter = adapter
         self.log = logging.getLogger("tts")
 
     async def start(self):
         self.bus.subscribe("tts.request", self._on_request)
 
     async def _on_request(self, payload: dict):
+        self.log.info("TTS: Received tts.request event")
         try:
             req = TTSRequest(**payload)
+            self.log.info("TTS: Parsed request: '%s'", req.text[:50] if req.text else "(empty)")
         except Exception:
-            self.log.warning("malformed tts.request event, skipping")
+            self.log.warning("TTS: Malformed tts.request event, skipping")
             return
 
         text = req.text.strip()
         if not text:
-            self.log.debug("empty text, skipping")
+            self.log.warning("TTS: Empty text, skipping")
             return
 
-        # run blocking synth in thread
-        self.log.info("synthesizing text (%d chars)", len(text))
-        path = await asyncio.to_thread(self.adapter.synth, text)
-        self.log.debug("synth complete: %s", path)
+        # run blocking synth in thread (Python 3.7 compatible)
+        self.log.info("TTS: Synthesizing text (%d chars): '%s'", len(text), text[:50])
+        loop = asyncio.get_event_loop()
+        path = await loop.run_in_executor(None, self.adapter.synth, text)
+        self.log.info("TTS: Synthesis complete: %s", path)
 
         # Get duration from audio file
         try:
@@ -63,7 +104,9 @@ class TTS:
 
         audio_event = TTSAudio(wav_path=path, duration_s=duration_s)
         same_trace(req, audio_event)
+        self.log.info("TTS: Publishing tts.audio event (path=%s, duration=%.2fs)", path, duration_s)
         await self.bus.publish(audio_event.topic, audio_event.dict())
+        self.log.info("TTS: Published tts.audio event successfully")
 
     async def stop(self):
         """Cleans up resources before shutdown"""
@@ -72,5 +115,6 @@ class TTS:
     
         # close adapter if possible
         if hasattr(self.adapter, 'close') and callable(self.adapter.close):
-            # prevent blocking event loop
-            await asyncio.to_thread(self.adapter.close)
+            # prevent blocking event loop (Python 3.7 compatible)
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, self.adapter.close)

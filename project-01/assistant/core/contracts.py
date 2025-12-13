@@ -1,22 +1,58 @@
+# -*- coding: utf-8 -*-
+"""
+--------------------------------------------------------------------------
+Event Contracts
+--------------------------------------------------------------------------
+License:   MIT License
+
+Copyright 2025 - Jackson Lieb
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+--------------------------------------------------------------------------
+
+Event contracts and data classes for Fish Assistant event bus. Defines
+standardized event types for audio recording, speech-to-text, natural
+language understanding, skills, text-to-speech, playback, and motor
+control.
+
+--------------------------------------------------------------------------
+"""
+
 from dataclasses import dataclass, asdict, field
-from typing import Any, Optional
+from typing import Any, Optional, Dict, List
 import time
 import uuid
 import os
 
 # Base Event
-@dataclass(slots=True)
+@dataclass
 class Event:
     topic: str
     ts_ms: int = field(default_factory=lambda: int(time.time() * 1000))
     corr_id: str = field(default_factory=lambda: uuid.uuid4().hex)
 
-    def dict(self) -> dict[str, Any]:
+    def dict(self) -> Dict[str, Any]:
         return asdict(self)
 
 # Core Events
 
-@dataclass(slots=True)
+@dataclass
 class AudioRecorded(Event):
     topic: str = "audio.recorded"
     wav_path: str = ""        # file path to recorded WAV
@@ -32,42 +68,42 @@ class AudioRecorded(Event):
         except Exception:
             pass
 
-@dataclass(slots=True)
+@dataclass
 class STTTranscript(Event):
     topic: str = "stt.transcript"
     text: str = ""
     confidence: Optional[float] = None  # 0..1 optional
     # Optional per-word timing: [{"word":"hi","start":0.12,"end":0.28}]
-    words: Optional[list[dict[str, Any]]] = None
+    words: Optional[List[Dict[str, Any]]] = None
 
-@dataclass(slots=True)
+@dataclass
 class NLUIntent(Event):
     topic: str = "nlu.intent"
     intent: str = "unknown"   # e.g., "time", "timer", "weather"
-    entities: dict[str, Any] = field(default_factory=dict)
+    entities: Dict[str, Any] = field(default_factory=dict)
     confidence: float = 0.0
     original_text: str = ""
 
-@dataclass(slots=True)
+@dataclass
 class SkillRequest(Event):
     topic: str = "skill.request"
     skill: str = ""           # target skill name (identity mapping by default)
-    payload: dict[str, Any] = field(default_factory=dict)
+    payload: Dict[str, Any] = field(default_factory=dict)
 
-@dataclass(slots=True)
+@dataclass
 class SkillResponse(Event):
     topic: str = "skill.response"
     skill: str = ""
     say: Optional[str] = None     # simple text to speak (optional)
-    data: dict[str, Any] = field(default_factory=dict)
+    data: Dict[str, Any] = field(default_factory=dict)
 
-@dataclass(slots=True)
+@dataclass
 class TTSRequest(Event):
     topic: str = "tts.request"
     text: str = ""
     voice: Optional[str] = None   # adapter-specific (optional)
 
-@dataclass(slots=True)
+@dataclass
 class TTSAudio(Event):
     topic: str = "tts.audio"
     wav_path: str = ""
@@ -77,26 +113,26 @@ class TTSAudio(Event):
         if not self.wav_path or self.duration_s <= 0.0:
             raise ValueError("TTSAudio requires non-empty wav_path and duration_s > 0")
 
-@dataclass(slots=True)
+@dataclass
 class PlaybackStart(Event):
     topic: str = "audio.playback.start"
     wav_path: str = ""
 
-@dataclass(slots=True)
+@dataclass
 class PlaybackEnd(Event):
     topic: str = "audio.playback.end"
     wav_path: str = ""
     ok: bool = True
 
 # Fish mouth control
-@dataclass(slots=True)
+@dataclass
 class MouthEnvelope(Event):
     topic: str = "anim.mouth.envelope"
-    env: list[float] = field(default_factory=list)  # normalized [0..1]
+    env: List[float] = field(default_factory=list)  # normalized [0..1]
     hop_ms: int = 20
 
 # Fish state for debugging
-@dataclass(slots=True)
+@dataclass
 class UXState(Event):
     topic: str = "ux.state"
     state: str = "idle"   # "idle","listening","thinking","speaking","error","muted"
@@ -108,6 +144,6 @@ def same_trace(parent: Event, child: Event) -> Event:
     child.corr_id = parent.corr_id
     return child
 
-def to_dict(e: Event) -> dict[str, Any]:
+def to_dict(e: Event) -> Dict[str, Any]:
     """Serialize any Event to a dict for the Bus or logging."""
     return e.dict()

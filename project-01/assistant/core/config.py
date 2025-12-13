@@ -1,13 +1,41 @@
+# -*- coding: utf-8 -*-
 """
-Configuration management for Fish Assistant.
+--------------------------------------------------------------------------
+Configuration Management
+--------------------------------------------------------------------------
+License:   MIT License
 
-Supports environment variables and .env files for configuring
-local vs remote adapters and server URLs.
+Copyright 2025 - Jackson Lieb
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+--------------------------------------------------------------------------
+
+Configuration management for Fish Assistant. Supports environment variables
+and .env files for configuring local vs remote adapters, server URLs, and
+deployment modes (full, server, client).
+
+--------------------------------------------------------------------------
 """
 
 import os
 import logging
-from typing import Literal, Optional
+from typing import Optional
 from pathlib import Path
 
 try:
@@ -37,13 +65,13 @@ class Config:
     """
     
     # STT Configuration
-    STT_MODE: Literal["local", "remote"] = os.getenv("STT_MODE", "local")
+    STT_MODE: str = os.getenv("STT_MODE", "local")  # "local" or "remote"
     STT_SERVER_URL: str = os.getenv("STT_SERVER_URL", "http://localhost:8000")
-    STT_MODEL_SIZE: Literal["tiny", "base", "small", "medium"] = os.getenv("STT_MODEL_SIZE", "tiny")
+    STT_MODEL_SIZE: str = os.getenv("STT_MODEL_SIZE", "tiny")  # "tiny", "base", "small", "medium"
     STT_TIMEOUT: float = float(os.getenv("STT_TIMEOUT", "30.0"))
     
     # TTS Configuration
-    TTS_MODE: Literal["local", "remote"] = os.getenv("TTS_MODE", "local")
+    TTS_MODE: str = os.getenv("TTS_MODE", "local")  # "local" or "remote"
     TTS_SERVER_URL: str = os.getenv("TTS_SERVER_URL", "http://localhost:8000")
     TTS_VOICE: Optional[str] = os.getenv("TTS_VOICE", None)
     TTS_TIMEOUT: float = float(os.getenv("TTS_TIMEOUT", "30.0"))
@@ -52,7 +80,7 @@ class Config:
     BILLY_BASS_ENABLED: bool = os.getenv("BILLY_BASS_ENABLED", "true").lower() in ("true", "1", "yes")
     
     # Deployment Mode Configuration
-    DEPLOYMENT_MODE: Literal["full", "server", "client"] = os.getenv("DEPLOYMENT_MODE", "full")
+    DEPLOYMENT_MODE: str = os.getenv("DEPLOYMENT_MODE", "full")  # "full", "server", or "client"
     SERVER_HOST: str = os.getenv("SERVER_HOST", "0.0.0.0")
     SERVER_PORT: int = int(os.getenv("SERVER_PORT", "8000"))
     

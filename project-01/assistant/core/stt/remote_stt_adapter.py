@@ -1,23 +1,42 @@
+# -*- coding: utf-8 -*-
 """
+--------------------------------------------------------------------------
+Remote STT Adapter
+--------------------------------------------------------------------------
+License:   MIT License
+
+Copyright 2025 - Jackson Lieb
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+--------------------------------------------------------------------------
+
 Remote STT adapter that proxies transcription requests to a remote server.
-
 Uploads WAV files via HTTP and receives transcripts. Maintains the same
-interface as the local whisper_adapter for drop-in replacement.
+interface as the local whisper_adapter for drop-in replacement. Expects
+server API at POST /api/stt/transcribe with multipart/form-data.
 
-Server API Expected:
-    POST /api/stt/transcribe
-    Content-Type: multipart/form-data
-    Body:
-        - audio: WAV file (multipart file)
-        - model_size: "tiny" | "base" | "small" | "medium" (form field)
-    
-    Response:
-        {"text": "transcribed text here"}
+--------------------------------------------------------------------------
 """
 
 import logging
 from pathlib import Path
-from typing import Literal
+from typing import Union
 import httpx
 import asyncio
 
@@ -25,9 +44,9 @@ logger = logging.getLogger("remote_stt")
 
 
 async def transcribe_file_async(
-    path: str | Path,
+    path: Union[str, Path],
     server_url: str,
-    model_size: Literal["tiny", "base", "small", "medium"] = "tiny",
+    model_size: str = "tiny",  # "tiny", "base", "small", "medium"
     timeout: float = 30.0,
 ) -> str:
     """
@@ -83,9 +102,9 @@ async def transcribe_file_async(
 
 
 def transcribe_file(
-    path: str | Path,
+    path: Union[str, Path],
     server_url: str,
-    model_size: Literal["tiny", "base", "small", "medium"] = "tiny",
+    model_size: str = "tiny",  # "tiny", "base", "small", "medium"
     timeout: float = 30.0,
 ) -> str:
     """
@@ -143,7 +162,7 @@ class RemoteSTTAdapter:
     def __init__(
         self,
         server_url: str,
-        model_size: Literal["tiny", "base", "small", "medium"] = "tiny",
+        model_size: str = "tiny",  # "tiny", "base", "small", "medium"
         timeout: float = 30.0,
     ):
         """
@@ -159,7 +178,7 @@ class RemoteSTTAdapter:
         self.timeout = timeout
         self.log = logging.getLogger("remote_stt")
     
-    def transcribe(self, path: str | Path) -> str:
+    def transcribe(self, path: Union[str, Path]) -> str:
         """
         Transcribe audio file using remote server.
         

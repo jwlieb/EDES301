@@ -1,8 +1,37 @@
+# -*- coding: utf-8 -*-
 """
-Client audio push service for server mode.
+--------------------------------------------------------------------------
+Client Audio Push Service
+--------------------------------------------------------------------------
+License:   MIT License
 
-When CLIENT_SERVER_URL is configured, pushes TTS audio files to the client
-for playback instead of (or in addition to) playing locally.
+Copyright 2025 - Jackson Lieb
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+--------------------------------------------------------------------------
+
+Client audio push service for server mode. When CLIENT_SERVER_URL is
+configured, pushes TTS audio files to the client for playback instead of
+(or in addition to) playing locally. Handles HTTP file uploads gracefully
+with error handling.
+
+--------------------------------------------------------------------------
 """
 
 import logging
@@ -49,44 +78,53 @@ class ClientAudioPush:
     
     async def _on_audio(self, payload: dict):
         """Handle tts.audio event by pushing to client."""
+        self.log.info("ClientPush: Received tts.audio event")
         if not self.client_url:
+            self.log.warning("ClientPush: CLIENT_SERVER_URL not configured, skipping push")
             return
         
         try:
             audio_event = TTSAudio(**payload)
+            self.log.info("ClientPush: Parsed audio event: %s (%.2fs)", audio_event.wav_path, audio_event.duration_s)
         except Exception as e:
-            self.log.warning("Malformed tts.audio event, skipping push: %s", e)
+            self.log.warning("ClientPush: Malformed tts.audio event, skipping push: %s", e)
             return
         
         wav_path = audio_event.wav_path
         if not wav_path or not os.path.exists(wav_path):
-            self.log.warning("Missing or invalid audio file, skipping push: %s", wav_path)
+            self.log.warning("ClientPush: Missing or invalid audio file, skipping push: %s", wav_path)
             return
         
         # Push to client asynchronously (don't block the pipeline)
+        self.log.info("ClientPush: Starting push to client: %s", self.client_url)
         try:
             await self._push_to_client(wav_path)
+            self.log.info("ClientPush: Successfully pushed audio to client")
         except Exception as e:
-            self.log.error("Failed to push audio to client: %s", e, exc_info=True)
+            self.log.error("ClientPush: Failed to push audio to client: %s", e, exc_info=True)
             # Don't raise - graceful degradation
     
     async def _push_to_client(self, wav_path: str):
         """Push audio file to client's /api/audio/play endpoint."""
         api_url = f"{self.client_url.rstrip('/')}/api/audio/play"
         
-        self.log.info("Pushing audio to client: %s (%s)", api_url, wav_path)
+        file_size = os.path.getsize(wav_path) if os.path.exists(wav_path) else 0
+        self.log.info("ClientPush: Pushing audio to %s", api_url)
+        self.log.info("ClientPush: File: %s (%d bytes)", wav_path, file_size)
         
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 with open(wav_path, "rb") as f:
                     files = {"audio": (os.path.basename(wav_path), f, "audio/wav")}
+                    self.log.info("ClientPush: Sending HTTP POST request...")
                     response = await client.post(api_url, files=files)
+                    self.log.info("ClientPush: Received HTTP response: %d", response.status_code)
                     response.raise_for_status()
                     
                     result = response.json()
                     self.log.info(
-                        "Successfully pushed audio to client: %s (duration: %.2fs)",
-                        wav_path, result.get("duration_s", 0)
+                        "ClientPush: Client accepted audio (duration: %.2fs, status: %s)",
+                        result.get("duration_s", 0), result.get("status", "unknown")
                     )
         except httpx.TimeoutException:
             self.log.error("Timeout pushing audio to client after 30s")

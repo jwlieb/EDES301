@@ -1,3 +1,42 @@
+# -*- coding: utf-8 -*-
+"""
+--------------------------------------------------------------------------
+Fish Assistant Main Application
+--------------------------------------------------------------------------
+License:   MIT License
+
+Copyright 2025 - Jackson Lieb
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+--------------------------------------------------------------------------
+
+Main entry point for the Fish Assistant application. This module initializes
+and coordinates all core components including speech-to-text (STT), natural
+language understanding (NLU), text-to-speech (TTS), audio playback, and
+motor controls. Supports multiple deployment modes: full (local), server
+(processes audio locally), and client (remote processing with local playback).
+
+Provides an interactive REPL for testing the full pipeline.
+
+--------------------------------------------------------------------------
+"""
+
 import asyncio
 import logging
 from assistant.core.bus import Bus
@@ -9,12 +48,15 @@ from assistant.core.audio.billy_bass import BillyBass
 from assistant.core.tts.tts import TTS
 from assistant.core.stt.stt import STT
 from assistant.skills.echo import EchoSkill
+from assistant.skills.chat import ChatSkill
 
 
 async def _start_core_components(bus: Bus, stt_adapter, tts_adapter, skip_playback: bool = False) -> None:
     """Internal helper to start core components with given adapters."""
     router = Router(bus)
-    router.register_intent("unknown", "echo")
+    router.register_intent("unknown", "chat")
+    router.register_intent("smalltalk", "chat")
+    router.register_intent("joke", "chat")
     
     stt = STT(bus, adapter=stt_adapter)
     nlu = NLU(bus)
@@ -22,6 +64,7 @@ async def _start_core_components(bus: Bus, stt_adapter, tts_adapter, skip_playba
     billy_bass = BillyBass(bus, enabled=Config.BILLY_BASS_ENABLED)
     tts = TTS(bus, adapter=tts_adapter)
     echo_skill = EchoSkill(bus)
+    chat_skill = ChatSkill(bus)
 
     await stt.start()
     await nlu.start()
@@ -30,6 +73,7 @@ async def _start_core_components(bus: Bus, stt_adapter, tts_adapter, skip_playba
     await billy_bass.start()
     await tts.start()
     await echo_skill.start()
+    await chat_skill.start()
 
 
 async def start_full_components(bus: Bus) -> None:
@@ -88,7 +132,9 @@ async def start_client_components(bus: Bus) -> None:
     # Create components - client only needs playback and motors
     # STT/TTS are still needed for the pipeline, but they use remote adapters
     router = Router(bus)
-    router.register_intent("unknown", "echo")
+    router.register_intent("unknown", "chat")
+    router.register_intent("smalltalk", "chat")
+    router.register_intent("joke", "chat")
     
     stt = STT(bus, adapter=stt_adapter)
     nlu = NLU(bus)
@@ -96,6 +142,7 @@ async def start_client_components(bus: Bus) -> None:
     billy_bass = BillyBass(bus, enabled=Config.BILLY_BASS_ENABLED)  # listens on audio.playback.start/end → controls mouth motor
     tts = TTS(bus, adapter=tts_adapter)
     echo_skill = EchoSkill(bus)
+    chat_skill = ChatSkill(bus)
 
     # Subscribe handlers
     await stt.start()
@@ -104,6 +151,7 @@ async def start_client_components(bus: Bus) -> None:
     await billy_bass.start()
     await tts.start()
     await echo_skill.start()
+    await chat_skill.start()
 
 
 async def start_components(bus: Bus) -> None:

@@ -1,4 +1,40 @@
+# -*- coding: utf-8 -*-
+"""
+--------------------------------------------------------------------------
+Rules-Based NLU Classifier
+--------------------------------------------------------------------------
+License:   MIT License
+
+Copyright 2025 - Jackson Lieb
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+--------------------------------------------------------------------------
+
+Rules-based natural language understanding classifier using regex patterns.
+Classifies user input into intents such as time, timer, weather, joke, music,
+and smalltalk. Extracts entities like duration from timer requests.
+
+--------------------------------------------------------------------------
+"""
+
 import re
+from typing import Optional
 from .types import NLUResult
 
 _TIME = re.compile(r"\b(time|what(?:'s| is) the time|time in)\b", re.I)
@@ -8,7 +44,7 @@ _JOKE = re.compile(r"\b(joke|funny|make me laugh)\b", re.I)
 _MUSIC = re.compile(r"\b(play|music|song|songs|playlist)\b", re.I)
 _HELLO = re.compile(r"\b(hi|hello|hey|thanks|bye)\b", re.I)
 
-def _duration_sec(text: str) -> int | None:
+def _duration_sec(text: str) -> Optional[int]:
     # trivial parser; expand later
     import re
     s = 0
